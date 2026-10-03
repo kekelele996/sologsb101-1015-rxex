@@ -6,9 +6,10 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Review, ReviewDraft, Trend, Vigor } from '../types/review'
 import { VIGOR_NEED_FOLLOW_UP, VIGOR_OPTIONS } from '../types/review'
-import { db, initDatabase, putReview, removeReview } from '../utils/db'
+import { ROW_REVISION, db, initDatabase, putReview, removeReview } from '../utils/db'
 import { nowIso, uuid } from '../utils/id'
 import { useTreeStore } from './treeStore'
+import { useTransferStore } from './transferStore'
 
 /** 长势复评筛选条件 */
 export interface ReviewFilters {
@@ -94,6 +95,20 @@ export const useReviewStore = defineStore('review', () => {
       lastMessage.value = check.message
       return null
     }
+    const treeStore = useTreeStore()
+    const transferStore = useTransferStore()
+    // 冻结期间双方都不能改这株树，新增复评同样拦下
+    const lockReason = transferStore.guardTreeWritable(draft.treeId)
+    if (lockReason !== null) {
+      lastMessage.value = lockReason
+      return null
+    }
+    const tree = treeStore.trees.find((item) => item.id === draft.treeId)
+    const ownerUnit = tree?.owner ?? ''
+    if (ownerUnit === '') {
+      lastMessage.value = '该古树管护单位缺失，请先在档案中落实归属后再登记复评。'
+      return null
+    }
     const stamp = nowIso()
     const row: Review = {
       id: uuid('review'),
@@ -103,13 +118,15 @@ export const useReviewStore = defineStore('review', () => {
       trend: draft.trend,
       conclusion: draft.conclusion.trim(),
       followUp: draft.followUp.trim(),
+      // 结论归属：按出具时的管护单位定名，后续管护划转不改写这一归属
+      ownerUnit,
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: ROW_REVISION,
     }
     await putReview(row)
     revision.value += 1
-    lastMessage.value = `已登记 ${row.date} 长势复评：${row.vigor}（${row.trend}）`
+    lastMessage.value = `已登记 ${row.date} 长势复评：${row.vigor}（${row.trend}），结论归入「${ownerUnit}」名下`
     return row
   }
 
@@ -121,6 +138,19 @@ export const useReviewStore = defineStore('review', () => {
     }
     const existing = await db.reviews.get(reviewId)
     if (!existing) return { ok: false, message: '复评记录不存在' }
+    const treeStore = useTreeStore()
+    const transferStore = useTransferStore()
+    const lockReason = transferStore.guardTreeWritable(existing.treeId)
+    if (lockReason !== null) {
+      lastMessage.value = lockReason
+      return { ok: false, message: lockReason }
+    }
+    const tree = treeStore.trees.find((item) => item.id === existing.treeId)
+    const ownerReason = transferStore.guardReviewWritable(existing, tree?.owner ?? '')
+    if (ownerReason !== null) {
+      lastMessage.value = ownerReason
+      return { ok: false, message: ownerReason }
+    }
     await putReview({
       ...existing,
       treeId: draft.treeId,
@@ -129,16 +159,34 @@ export const useReviewStore = defineStore('review', () => {
       trend: draft.trend,
       conclusion: draft.conclusion.trim(),
       followUp: draft.followUp.trim(),
+      // ownerUnit 保持定案值，编辑不改归属
+      ownerUnit: existing.ownerUnit,
     })
     revision.value += 1
-    lastMessage.value = '复评记录已更新'
+    lastMessage.value = '复评记录已更新（结论归属单位保持不变）'
     return { ok: true, message: '' }
   }
 
-  async function deleteReview(reviewId: string): Promise<void> {
+  async function deleteReview(reviewId: string): Promise<boolean> {
+    const existing = await db.reviews.get(reviewId)
+    if (!existing) return false
+    const treeStore = useTreeStore()
+    const transferStore = useTransferStore()
+    const lockReason = transferStore.guardTreeWritable(existing.treeId)
+    if (lockReason !== null) {
+      lastMessage.value = lockReason
+      return false
+    }
+    const tree = treeStore.trees.find((item) => item.id === existing.treeId)
+    const ownerReason = transferStore.guardReviewWritable(existing, tree?.owner ?? '')
+    if (ownerReason !== null) {
+      lastMessage.value = ownerReason
+      return false
+    }
     await removeReview(reviewId)
     selectedIds.value = selectedIds.value.filter((id) => id !== reviewId)
     revision.value += 1
+    return true
   }
 
   async function refreshCounts(): Promise<void> {

@@ -11,6 +11,12 @@ export const PROTECT_LEVEL_OPTIONS: ProtectLevel[] = ['一级', '二级', '三�
 /** 常见古树树种候选（可在表单中自由填写其他树种） */
 export const TREE_SPECIES_CANDIDATES: string[] = ['国槐', '银杏', '侧柏', '香樟', '皂荚', '圆柏', '油松', '朴树']
 
+/**
+ * 管护单位缺失时的回填占位值。
+ * 历史数据缺归属时，打开库先按现状回填为此值，归属补齐之后才允许发起管护责任划转。
+ */
+export const UNASSIGNED_OWNER = '未划分管护单位'
+
 export interface Tree {
   id: string
   /** 古树编号，如 京-01-0007 */

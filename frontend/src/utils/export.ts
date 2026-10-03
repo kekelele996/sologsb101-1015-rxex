@@ -72,7 +72,11 @@ export function parseSnapshot(text: string): SnapshotParseResult {
       return { ok: false, message: `存档缺少 ${String(key)} 数组。`, snapshot: null }
     }
   }
-  return { ok: true, message: '存档校验通过。', snapshot: data as DatabaseSnapshot }
+  // v2 及更早存档没有划转表，导入时按空集合处理，再由 backfillOwnership 补归属
+  const snapshot = data as DatabaseSnapshot
+  snapshot.transfers = Array.isArray(snapshot.transfers) ? snapshot.transfers : []
+  snapshot.transferIssues = Array.isArray(snapshot.transferIssues) ? snapshot.transferIssues : []
+  return { ok: true, message: '存档校验通过。', snapshot }
 }
 
 /** 生成古树养护总览 CSV（一树一行） */
@@ -106,6 +110,7 @@ export function buildTreeCsv(
     '复评次数',
     '最新长势',
     '最新趋势',
+    '最新复评结论归属',
   ]
   const lines: string[] = [header.map(csvCell).join(',')]
   trees.forEach((tree) => {
@@ -140,6 +145,7 @@ export function buildTreeCsv(
         treeReviews.length,
         latestReview === null ? '—' : latestReview.vigor,
         latestReview === null ? '—' : latestReview.trend,
+        latestReview === null || !latestReview.ownerUnit ? '—' : latestReview.ownerUnit,
       ]
         .map(csvCell)
         .join(','),

@@ -21,6 +21,11 @@ const treeStore = useTreeStore()
 
 const { rows, loading, create, update, remove } = useIdbTable<Support>(db.supports, { sortByUpdatedAt: false })
 
+/** 加固件所属古树是否正处于划转冻结中：冻结期间连「登记本次检查」也不能点（两边别同时改） */
+function rowLocked(row: Support): boolean {
+  return treeStore.guardTreeWritable(row.treeId) !== null
+}
+
 const keyword = ref('')
 const treeFilter = ref('all')
 const typeFilter = ref<SupportType | 'all'>('all')
@@ -84,6 +89,11 @@ function rowClassName({ row }: { row: Support }): string {
 function openCreate(): void {
   const treeId =
     treeFilter.value !== 'all' ? treeFilter.value : (treeStore.currentTreeId ?? treeStore.trees[0]?.id ?? '')
+  const lockReason = treeStore.guardTreeWritable(treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   editingId.value = null
   Object.assign(form, {
     treeId,
@@ -109,6 +119,11 @@ function openEdit(row: Support): void {
 
 async function handleSubmit(): Promise<void> {
   if (formRef.value === undefined) return
+  const lockReason = treeStore.guardTreeWritable(form.treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
   submitting.value = true
@@ -143,6 +158,11 @@ async function handleDelete(row: Support): Promise<void> {
 }
 
 async function handleMarkChecked(row: Support): Promise<void> {
+  const lockReason = treeStore.guardTreeWritable(row.treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   await markSupportChecked(row.id, today())
   ElMessage.success(`已登记 ${treeLabel.value[row.treeId] ?? '该古树'} 的 ${row.type} 本次检查`)
 }
@@ -248,7 +268,9 @@ function handleFilterChange(key: string, value: string): void {
           <template #default="{ row }">
             <div class="cell-stack">
               <span>{{ treeLabel[row.treeId] ?? '（古树已删除）' }}</span>
+              <el-tag v-if="rowLocked(row)" type="warning" size="small" effect="dark">划转冻结中</el-tag>
               <VigorTag
+                v-else
                 :vigor="treeStore.statOf(row.treeId).latestVigor"
                 :trend="treeStore.statOf(row.treeId).latestTrend"
                 size="small"
@@ -290,12 +312,13 @@ function handleFilterChange(key: string, value: string): void {
               link
               :type="isSupportOverdue(row.lastCheckDate, row.checkCycleMon) ? 'danger' : 'primary'"
               size="small"
+              :disabled="rowLocked(row)"
               @click="handleMarkChecked(row)"
             >
               登记本次检查
             </el-button>
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+            <el-button link type="primary" size="small" :disabled="rowLocked(row)" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" size="small" :disabled="rowLocked(row)" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>

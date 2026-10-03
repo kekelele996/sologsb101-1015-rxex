@@ -12,6 +12,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import VigorTag from '@/components/common/VigorTag.vue'
 import { useTreeStore } from '@/stores/treeStore'
+import { useTransferStore } from '@/stores/transferStore'
 import {
   PROTECT_LEVEL_OPTIONS,
   TREE_SPECIES_CANDIDATES,
@@ -22,6 +23,7 @@ import {
 
 const router = useRouter()
 const treeStore = useTreeStore()
+const transferStore = useTransferStore()
 
 const dialogVisible = ref(false)
 const submitting = ref(false)
@@ -69,7 +71,12 @@ const totals = computed(() => {
 
 onMounted(() => {
   void treeStore.loadAll()
+  void transferStore.init()
 })
+
+function pendingTransferOf(treeId: string) {
+  return treeStore.lockedTreeMap[treeId] ?? null
+}
 
 function openCreate(): void {
   editingId.value = null
@@ -153,6 +160,22 @@ function handleFilterChange(key: string, value: string): void {
       <StatBadge label="筛选结果" :value="rows.length" suffix="株" tone="info" icon="PieChart" size="small" />
     </div>
 
+    <el-alert
+      v-if="transferStore.pendingIssueCount > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="mb-14"
+      :title="`有 ${transferStore.pendingIssueCount} 笔管护划转对账挂账等待裁定`"
+    >
+      <template #default>
+        <div class="issue-line">
+          <span>两边按编号对账对不上的古树已先摆到档案页，不移动树木，请尽快人工裁定。</span>
+          <el-button size="small" type="primary" plain @click="router.push('/transfers')">前往裁定</el-button>
+        </div>
+      </template>
+    </el-alert>
+
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
@@ -213,6 +236,9 @@ function handleFilterChange(key: string, value: string): void {
             <div class="cell-stack">
               <span>{{ row.location }}</span>
               <span class="cell-sub">{{ row.owner }}</span>
+              <el-tag v-if="pendingTransferOf(row.id)" type="warning" size="small" effect="dark">
+                划转冻结中 · {{ pendingTransferOf(row.id)?.toUnit }}
+              </el-tag>
             </div>
           </template>
         </el-table-column>
@@ -258,8 +284,15 @@ function handleFilterChange(key: string, value: string): void {
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click.stop="goSurveys(row)">树体检查</el-button>
-            <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
+            <el-tooltip
+              v-if="pendingTransferOf(row.id)"
+              content="划转待接收 / 退回期间双方都不能编辑该档案"
+              placement="top"
+            >
+              <span><el-button link type="primary" size="small" disabled>编辑</el-button></span>
+            </el-tooltip>
+            <el-button v-else link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" size="small" :disabled="pendingTransferOf(row.id) !== null" @click.stop="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -356,5 +389,17 @@ function handleFilterChange(key: string, value: string): void {
 .cell-warn {
   color: #c0392b;
   font-weight: 600;
+}
+
+.issue-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mb-14 {
+  margin-bottom: 14px;
 }
 </style>

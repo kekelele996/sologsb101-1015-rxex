@@ -15,6 +15,7 @@ import { useIdbTable } from '@/hooks/useIdbTable'
 import { HISTORY_KIND_LABEL, useTreeHistory } from '@/hooks/useTreeHistory'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useTreeStore } from '@/stores/treeStore'
+import { useTransferStore } from '@/stores/transferStore'
 import { DB_NAME, DB_SCHEMA_VERSION, db, exportSnapshot, importSnapshot, resetDatabase } from '@/utils/db'
 import { exportSnapshotJson, exportTreeCsvFile, parseSnapshot } from '@/utils/export'
 import { TREND_OPTIONS, VIGOR_OPTIONS, VIGOR_NEED_FOLLOW_UP, type Review, type ReviewDraft, type Trend, type Vigor } from '@/types/review'
@@ -22,8 +23,9 @@ import { TREND_OPTIONS, VIGOR_OPTIONS, VIGOR_NEED_FOLLOW_UP, type Review, type R
 const router = useRouter()
 const treeStore = useTreeStore()
 const reviewStore = useReviewStore()
+const transferStore = useTransferStore()
 
-const { rows, loading, remove } = useIdbTable<Review>(db.reviews, { sortByUpdatedAt: false })
+const { rows, loading } = useIdbTable<Review>(db.reviews, { sortByUpdatedAt: false })
 
 const dialogVisible = ref(false)
 const submitting = ref(false)
@@ -81,13 +83,51 @@ const weakCount = computed<number>(
   () => rows.value.filter((row) => VIGOR_NEED_FOLLOW_UP.includes(row.vigor)).length
 )
 
+/** 该树当前管护单位（用于判断复评结论归属是否仍是本单位） */
+function treeOwnerOf(treeId: string): string {
+  return treeStore.trees.find((tree) => tree.id === treeId)?.owner ?? ''
+}
+
+/** 划转冻结中的树：双方都不能改 */
+function reviewLocked(row: Review): boolean {
+  return transferStore.guardTreeWritable(row.treeId) !== null
+}
+
+/**
+ * 结论归属单位是否仍是当前管护单位：
+ * 树已划走后，老结论留在原单位名下，接手单位只能查看、不能改写。
+ */
+function reviewOwnedByCurrent(row: Review): boolean {
+  return row.ownerUnit !== '' && row.ownerUnit === treeOwnerOf(row.treeId)
+}
+
+/** 新建复评是否被冻结拦截（当前上下文树） */
+const createBlockedTreeId = computed<string | null>(() => {
+  const candidate =
+    reviewStore.filters.treeId !== 'all'
+      ? reviewStore.filters.treeId
+      : (treeStore.currentTreeId ?? treeStore.trees[0]?.id ?? '')
+  if (candidate === '') return null
+  return transferStore.isTreeLocked(candidate) ? candidate : null
+})
+
 onMounted(() => {
   void treeStore.loadAll()
   void reviewStore.init()
+  void transferStore.init()
   timelineTreeId.value = treeStore.currentTreeId
 })
 
 function openCreate(): void {
+  const candidate =
+    reviewStore.filters.treeId !== 'all'
+      ? reviewStore.filters.treeId
+      : (treeStore.currentTreeId ?? treeStore.trees[0]?.id ?? '')
+  const lockReason = candidate === '' ? null : transferStore.guardTreeWritable(candidate)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   editingId.value = null
   Object.assign(form, {
     treeId:
@@ -104,6 +144,16 @@ function openCreate(): void {
 }
 
 function openEdit(row: Review): void {
+  const lockReason = transferStore.guardTreeWritable(row.treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
+  const ownerReason = transferStore.guardReviewWritable(row, treeOwnerOf(row.treeId))
+  if (ownerReason !== null) {
+    ElMessage.warning(ownerReason)
+    return
+  }
   editingId.value = row.id
   Object.assign(form, {
     treeId: row.treeId,
@@ -147,6 +197,16 @@ async function handleSubmit(): Promise<void> {
 }
 
 async function handleDelete(row: Review): Promise<void> {
+  const lockReason = transferStore.guardTreeWritable(row.treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
+  const ownerReason = transferStore.guardReviewWritable(row, treeOwnerOf(row.treeId))
+  if (ownerReason !== null) {
+    ElMessage.warning(ownerReason)
+    return
+  }
   try {
     await ElMessageBox.confirm(`确认删除 ${row.date} 的长势复评记录（${row.vigor}）？`, '删除确认', {
       type: 'warning',
@@ -156,9 +216,9 @@ async function handleDelete(row: Review): Promise<void> {
   } catch {
     return
   }
-  await remove(row.id)
-  await reviewStore.deleteReview(row.id)
-  ElMessage.success('复评记录已删除')
+  const ok = await reviewStore.deleteReview(row.id)
+  if (ok) ElMessage.success('复评记录已删除')
+  else ElMessage.error(reviewStore.lastMessage || '删除失败')
 }
 
 async function handleExport(): Promise<void> {
@@ -283,7 +343,11 @@ function handleFilterChange(key: string, value: string): void {
                   </el-button>
                 </el-upload>
                 <el-button type="danger" plain @click="handleReset">重置演示数据</el-button>
-                <el-button type="primary" @click="openCreate" :disabled="treeStore.trees.length === 0">
+                <el-button
+                  type="primary"
+                  :disabled="treeStore.trees.length === 0 || createBlockedTreeId !== null"
+                  @click="openCreate"
+                >
                   <el-icon><Plus /></el-icon>
                   <span>新增复评</span>
                 </el-button>
@@ -336,7 +400,8 @@ function handleFilterChange(key: string, value: string): void {
                   <el-link type="primary" @click.stop="router.push(`/trees/${row.treeId}/surveys`)">
                     {{ treeLabel[row.treeId] ?? '（古树已删除）' }}
                   </el-link>
-                  <span class="cell-sub">最近复壮：{{ treeStore.trees.find((tree) => tree.id === row.treeId)?.lastMeasureDate || '未登记' }}</span>
+                  <el-tag v-if="reviewLocked(row)" type="warning" size="small" effect="dark">划转冻结中</el-tag>
+                  <span v-else class="cell-sub">最近复壮：{{ treeStore.trees.find((tree) => tree.id === row.treeId)?.lastMeasureDate || '未登记' }}</span>
                 </div>
               </template>
             </el-table-column>
@@ -353,21 +418,47 @@ function handleFilterChange(key: string, value: string): void {
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="复评结论" min-width="240">
+            <el-table-column label="结论归属单位" width="180">
+              <template #default="{ row }">
+                <div class="cell-stack">
+                  <el-tooltip
+                    v-if="!reviewOwnedByCurrent(row)"
+                    content="该结论由原管护单位定案并留存在其名下，当前管护单位只能查看、不能改写"
+                    placement="top"
+                  >
+                    <el-tag type="info" size="small" effect="plain">原单位留存 · {{ row.ownerUnit || '—' }}</el-tag>
+                  </el-tooltip>
+                  <el-tag v-else type="success" size="small" effect="plain">{{ row.ownerUnit }}</el-tag>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="复评结论" min-width="220">
               <template #default="{ row }">
                 <span>{{ row.conclusion }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="后续措施" min-width="240">
+            <el-table-column label="后续措施" min-width="220">
               <template #default="{ row }">
                 <el-tag v-if="row.followUp === ''" type="info" size="small" effect="plain">无需填写</el-tag>
                 <span v-else>{{ row.followUp }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
+            <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
-                <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
+                <el-tooltip
+                  v-if="reviewLocked(row) || !reviewOwnedByCurrent(row)"
+                  :content="reviewLocked(row) ? (transferStore.guardTreeWritable(row.treeId) ?? '划转冻结中') : '原单位定过的复评结论不可由接手单位改写'"
+                  placement="top"
+                >
+                  <span class="action-locked">
+                    <el-button link type="primary" size="small" disabled>编辑</el-button>
+                    <el-button link type="danger" size="small" disabled>删除</el-button>
+                  </span>
+                </el-tooltip>
+                <template v-else>
+                  <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
+                  <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
+                </template>
               </template>
             </el-table-column>
           </el-table>
@@ -466,6 +557,23 @@ function handleFilterChange(key: string, value: string): void {
           :title="needFollowUp ? `长势为「${form.vigor}」，后续措施为必填项` : '长势良好，后续措施为选填项'"
           description="长势为衰弱或濒危时，必须填写后续措施才能保存，否则复评校验会拦截。"
         />
+        <el-alert
+          v-if="editingId === null"
+          type="success"
+          show-icon
+          :closable="false"
+          class="mt-10"
+          :title="`本次复评结论将归入「${treeOwnerOf(form.treeId) || '当前管护单位'}」名下`"
+          description="结论归属定案后不随古树管护责任划转改写；树划走后接手单位只能查看这些历史结论，不能改写。"
+        />
+        <el-alert
+          v-else
+          type="info"
+          show-icon
+          :closable="false"
+          class="mt-10"
+          title="编辑只更新本次结论内容，结论归属单位保持不变"
+        />
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -529,5 +637,14 @@ function handleFilterChange(key: string, value: string): void {
 
 .mb-14 {
   margin-bottom: 14px;
+}
+
+.mt-10 {
+  margin-top: 10px;
+}
+
+.action-locked {
+  display: inline-flex;
+  gap: 4px;
 }
 </style>

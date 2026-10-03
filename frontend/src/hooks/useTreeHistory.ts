@@ -75,8 +75,11 @@ export function buildHistory(
       kind: 'review',
       date: row.date,
       title: `长势复评 · ${row.vigor}`,
-      detail: row.conclusion + (row.followUp === '' ? '' : `（后续措施：${row.followUp}）`),
-      badge: row.trend,
+      detail:
+        row.conclusion +
+        (row.followUp === '' ? '' : `（后续措施：${row.followUp}）`) +
+        (row.ownerUnit ? `【结论归属：${row.ownerUnit}】` : ''),
+      badge: row.ownerUnit ? `${row.trend} · ${row.ownerUnit}` : row.trend,
     })
   })
   return items.sort((a, b) => b.date.localeCompare(a.date))

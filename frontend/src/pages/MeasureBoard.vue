@@ -28,6 +28,11 @@ const measureStore = useMeasureStore()
 
 const { rows, loading } = useIdbTable<Measure>(db.measures, { sortByUpdatedAt: false })
 
+/** 一行措施所属古树是否正处于划转冻结中（冻结期间双方都不能改） */
+function rowLocked(row: Measure): boolean {
+  return treeStore.guardTreeWritable(row.treeId) !== null
+}
+
 const dialogVisible = ref(false)
 const submitting = ref(false)
 const editingId = ref<string | null>(null)
@@ -89,6 +94,11 @@ function openCreate(): void {
     measureStore.filters.treeId !== 'all'
       ? measureStore.filters.treeId
       : (treeStore.currentTreeId ?? treeStore.trees[0]?.id ?? '')
+  const lockReason = treeStore.guardTreeWritable(treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   editingId.value = null
   Object.assign(form, {
     treeId,
@@ -116,6 +126,11 @@ function openEdit(row: Measure): void {
 
 async function handleSubmit(): Promise<void> {
   if (formRef.value === undefined) return
+  const lockReason = treeStore.guardTreeWritable(form.treeId)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
   submitting.value = true
@@ -271,7 +286,8 @@ function handleFilterChange(key: string, value: string): void {
           <template #default="{ row }">
             <div class="cell-stack">
               <span>{{ treeLabel[row.treeId] ?? '（古树已删除）' }}</span>
-              <span class="cell-sub">
+              <el-tag v-if="rowLocked(row)" type="warning" size="small" effect="dark">划转冻结中</el-tag>
+              <span v-else class="cell-sub">
                 最近复壮：{{ treeStore.trees.find((tree) => tree.id === row.treeId)?.lastMeasureDate || '未登记' }}
               </span>
             </div>
@@ -291,6 +307,7 @@ function handleFilterChange(key: string, value: string): void {
               value-format="YYYY-MM-DD"
               size="small"
               style="width: 150px"
+              :disabled="rowLocked(row)"
               @update:model-value="(value: string) => measureStore.setDraft(row.id, { date: value })"
             />
             <span v-else>{{ row.date }}</span>
@@ -302,6 +319,7 @@ function handleFilterChange(key: string, value: string): void {
               v-if="measureStore.hasDraft(row.id)"
               :model-value="measureStore.drafts[row.id]?.material ?? row.material"
               size="small"
+              :disabled="rowLocked(row)"
               @update:model-value="(value: string) => measureStore.setDraft(row.id, { material: value })"
             />
             <span v-else>{{ row.material }}</span>
@@ -313,6 +331,7 @@ function handleFilterChange(key: string, value: string): void {
               v-if="measureStore.hasDraft(row.id)"
               :model-value="measureStore.drafts[row.id]?.operator ?? row.operator"
               size="small"
+              :disabled="rowLocked(row)"
               @update:model-value="(value: string) => measureStore.setDraft(row.id, { operator: value })"
             />
             <span v-else>{{ row.operator }}</span>
@@ -330,16 +349,15 @@ function handleFilterChange(key: string, value: string): void {
         </el-table-column>
         <el-table-column label="草稿" width="150">
           <template #default="{ row }">
-            <el-button v-if="measureStore.hasDraft(row.id)" size="small" type="primary" @click="measureStore.saveDraft(row.id)">
-              保存
-            </el-button>
-            <el-button v-if="measureStore.hasDraft(row.id)" size="small" @click="measureStore.clearDraft(row.id)">
-              放弃
-            </el-button>
-            <el-button
-              v-else
-              size="small"
-              @click="
+            <template v-if="measureStore.hasDraft(row.id)">
+              <el-button size="small" type="primary" :disabled="rowLocked(row)" @click="measureStore.saveDraft(row.id)">
+                保存
+              </el-button>
+              <el-button size="small" :disabled="rowLocked(row)" @click="measureStore.clearDraft(row.id)">
+                放弃
+              </el-button>
+            </template>
+            <el-button v-else size="small" :disabled="rowLocked(row)" @click="
                 measureStore.setDraft(row.id, {
                   date: row.date,
                   material: row.material,
@@ -354,11 +372,11 @@ function handleFilterChange(key: string, value: string): void {
         </el-table-column>
         <el-table-column label="操作" width="230" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" :disabled="row.state === '已完成'" @click="handleAdvance(row)">
+            <el-button link type="primary" size="small" :disabled="row.state === '已完成' || rowLocked(row)" @click="handleAdvance(row)">
               推进状态
             </el-button>
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+            <el-button link type="primary" size="small" :disabled="rowLocked(row)" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" size="small" :disabled="rowLocked(row)" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>

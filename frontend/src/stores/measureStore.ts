@@ -6,6 +6,7 @@ import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Measure, MeasureDraft, MeasureState, MeasureType } from '../types/measure'
 import {
+  ROW_REVISION,
   batchSetMeasureState,
   db,
   initDatabase,
@@ -72,11 +73,18 @@ export const useMeasureStore = defineStore('measure', () => {
     return drafts.value[measureId] !== undefined
   }
 
+  /** 冻结中的古树（待接收划转）禁止改其复壮措施，避免两边同时改同一株树 */
+  function ensureWritable(treeId: string): void {
+    const reason = useTreeStore().guardTreeWritable(treeId)
+    if (reason !== null) throw new Error(reason)
+  }
+
   async function saveDraft(measureId: string): Promise<void> {
     const draft = drafts.value[measureId]
     if (draft === undefined) return
     const existing = await db.measures.get(measureId)
     if (!existing) return
+    ensureWritable(existing.treeId)
     await putMeasure({ ...existing, ...draft } as Measure)
     clearDraft(measureId)
     revision.value += 1
@@ -84,6 +92,7 @@ export const useMeasureStore = defineStore('measure', () => {
   }
 
   async function createMeasure(draft: MeasureDraft): Promise<Measure> {
+    ensureWritable(draft.treeId)
     const stamp = nowIso()
     const row: Measure = {
       id: uuid('measure'),
@@ -95,7 +104,7 @@ export const useMeasureStore = defineStore('measure', () => {
       state: draft.state,
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: ROW_REVISION,
     }
     await putMeasure(row)
     revision.value += 1
@@ -106,6 +115,7 @@ export const useMeasureStore = defineStore('measure', () => {
   }
 
   async function updateMeasure(measureId: string, draft: MeasureDraft): Promise<void> {
+    ensureWritable(draft.treeId)
     const existing = await db.measures.get(measureId)
     if (!existing) return
     await putMeasure({
@@ -121,6 +131,8 @@ export const useMeasureStore = defineStore('measure', () => {
   }
 
   async function deleteMeasure(measureId: string): Promise<void> {
+    const existing = await db.measures.get(measureId)
+    if (existing) ensureWritable(existing.treeId)
     await removeMeasure(measureId)
     clearDraft(measureId)
     selectedIds.value = selectedIds.value.filter((id) => id !== measureId)
@@ -131,6 +143,7 @@ export const useMeasureStore = defineStore('measure', () => {
   async function advance(measureId: string): Promise<MeasureState | null> {
     const existing = await db.measures.get(measureId)
     if (!existing) return null
+    ensureWritable(existing.treeId)
     const flow: MeasureState[] = ['计划', '实施中', '已完成']
     const index = flow.indexOf(existing.state)
     if (index < 0 || index >= flow.length - 1) return null
@@ -141,14 +154,25 @@ export const useMeasureStore = defineStore('measure', () => {
     return next
   }
 
-  /** 批量修改实施状态 */
+  /** 批量修改实施状态；命中冻结古树的措施会被跳过 */
   async function batchSetState(state: MeasureState): Promise<number> {
-    const count = await batchSetMeasureState(selectedIds.value, state)
+    const treeStore = useTreeStore()
+    const rows = await db.measures.bulkGet(selectedIds.value)
+    const list = rows.filter((row): row is Measure => row !== undefined)
+    const allowed = list.filter((row) => treeStore.guardTreeWritable(row.treeId) === null)
+    const skipped = list.length - allowed.length
+    const count = await batchSetMeasureState(
+      allowed.map((row) => row.id),
+      state
+    )
     selectedIds.value = []
     revision.value += 1
-    lastMessage.value = `已把 ${count} 条措施状态改为「${state}」`
+    lastMessage.value =
+      skipped > 0
+        ? `已改 ${count} 条；${skipped} 条因古树正在划转冻结中被跳过`
+        : `已把 ${count} 条措施状态改为「${state}」`
     // 回写古树日期后，同步刷新古树统计
-    await useTreeStore().refreshCounts()
+    await treeStore.refreshCounts()
     return count
   }
 

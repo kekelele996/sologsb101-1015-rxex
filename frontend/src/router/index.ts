@@ -11,6 +11,7 @@ export const ROUTES = {
   measures: '/measures',
   supports: '/supports',
   reviews: '/reviews',
+  transfers: '/transfers',
 } as const
 
 const routes: RouteRecordRaw[] = [
@@ -44,6 +45,12 @@ const routes: RouteRecordRaw[] = [
     name: 'review-view',
     component: () => import('@/pages/ReviewView.vue'),
     meta: { title: '长势复评与结构版本' },
+  },
+  {
+    path: '/transfers',
+    name: 'transfer-board',
+    component: () => import('@/pages/TransferBoard.vue'),
+    meta: { title: '管护责任划转' },
   },
   { path: '/:pathMatch(.*)*', redirect: ROUTES.trees },
 ]

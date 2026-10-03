@@ -22,6 +22,9 @@ const treeStore = useTreeStore()
 
 const treeId = computed<string>(() => String(route.params.id ?? ''))
 const tree = computed(() => treeStore.trees.find((item) => item.id === treeId.value) ?? null)
+/** 划转冻结中的树：树体检查也不能改（两边别同时改同一株树） */
+const lockedTransfer = computed(() => treeStore.lockedTreeMap[treeId.value] ?? null)
+const locked = computed<boolean>(() => lockedTransfer.value !== null)
 const { rows, loading, create, update, remove } = useIdbTable<Survey>(db.surveys, { sortByUpdatedAt: false })
 const { items } = useTreeHistory(treeId)
 
@@ -95,6 +98,10 @@ onMounted(() => {
 })
 
 function openCreate(): void {
+  if (locked.value) {
+    ElMessage.warning(treeStore.guardTreeWritable(treeId.value) ?? '该树正在划转冻结中，暂不能新增检查')
+    return
+  }
   editingId.value = null
   Object.assign(form, {
     treeId: treeId.value,
@@ -126,6 +133,11 @@ function openEdit(row: Survey): void {
 
 async function handleSubmit(): Promise<void> {
   if (formRef.value === undefined) return
+  const lockReason = treeStore.guardTreeWritable(treeId.value)
+  if (lockReason !== null) {
+    ElMessage.warning(lockReason)
+    return
+  }
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
   submitting.value = true
@@ -194,6 +206,15 @@ async function handleDelete(row: Survey): Promise<void> {
     </EmptyPanel>
 
     <template v-else>
+      <el-alert
+        v-if="lockedTransfer"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="mb-14"
+        :title="`该树正在办理管护划转（批次 ${lockedTransfer.batchNo}：${lockedTransfer.fromUnit} → ${lockedTransfer.toUnit}）`"
+        description="待接手方接收或退回期间，树体检查记录双方都不能新增、编辑或删除；整棵树连同检查、措施、加固件随划转走。"
+      />
       <div class="stat-row">
         <StatBadge label="检查次数" :value="surveys.length" suffix="次" tone="primary" icon="Histogram" />
         <StatBadge
@@ -260,7 +281,7 @@ async function handleDelete(row: Survey): Promise<void> {
             <template #header>
               <div class="card-header">
                 <span class="card-header__title">树体与立地检查记录</span>
-                <el-button type="primary" @click="openCreate">
+                <el-button type="primary" :disabled="locked" @click="openCreate">
                   <el-icon><Plus /></el-icon>
                   <span>新增检查</span>
                 </el-button>
@@ -321,8 +342,8 @@ async function handleDelete(row: Survey): Promise<void> {
               </el-table-column>
               <el-table-column label="操作" width="140" fixed="right">
                 <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-                  <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
+                  <el-button link type="primary" size="small" :disabled="locked" @click="openEdit(row)">编辑</el-button>
+                  <el-button link type="danger" size="small" :disabled="locked" @click="handleDelete(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>

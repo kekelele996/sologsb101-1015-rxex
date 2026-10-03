@@ -29,6 +29,8 @@ import {
   leanLevel,
   type LeanLevel,
 } from '../utils/dimension'
+import type { Transfer } from '../types/transfer'
+import { TRANSFER_LOCKED_STATE } from '../types/transfer'
 
 /** 古树筛选条件（关键字 + 保护级别 + 树种），由 <FilterBar> 同步到 URL query */
 export interface TreeFilters {
@@ -110,12 +112,32 @@ export const useTreeStore = defineStore('tree', () => {
   const measures = ref<Measure[]>([])
   const supports = ref<Support[]>([])
   const reviews = ref<Review[]>([])
+  /** 管护划转单（含冻结中的「待接收」），用于派生整株树的写锁 */
+  const transfers = ref<Transfer[]>([])
   const loading = ref(true)
   const ready = ref(false)
   const error = ref('')
   const currentTreeId = ref<string | null>(readCurrentTreeId())
   const counts = ref<Record<string, number>>({})
   const filters = reactive<TreeFilters>({ keyword: '', protectLevel: 'all', species: 'all' })
+
+  /** 冻结中的古树 id → 划转单：待接收期间原单位与接手单位都不能改 */
+  const lockedTreeMap = computed<Record<string, Transfer>>(() => {
+    const map: Record<string, Transfer> = {}
+    transfers.value
+      .filter((row) => row.state === TRANSFER_LOCKED_STATE)
+      .forEach((row) => {
+        if (row.treeId !== '') map[row.treeId] = row
+      })
+    return map
+  })
+
+  /** 业务页写入前的统一冻结拦截；返回 null 放行 */
+  function guardTreeWritable(treeId: string): string | null {
+    const transfer = lockedTreeMap.value[treeId]
+    if (transfer === undefined) return null
+    return `该树正在办理管护划转（批次 ${transfer.batchNo}：${transfer.fromUnit} → ${transfer.toUnit}），待接收 / 退回期间双方都不能修改。`
+  }
 
   const speciesOptions = computed<string[]>(() => {
     const set = new Set(trees.value.map((tree) => tree.species))
@@ -201,22 +223,25 @@ export const useTreeStore = defineStore('tree', () => {
       if (!subscribed) {
         subscribed = true
         liveQuery(async () => {
-          const [treeRows, surveyRows, measureRows, supportRows, reviewRows] = await Promise.all([
-            db.trees.toArray(),
-            db.surveys.toArray(),
-            db.measures.toArray(),
-            db.supports.toArray(),
-            db.reviews.toArray(),
-          ])
-          return { treeRows, surveyRows, measureRows, supportRows, reviewRows }
+          const [treeRows, surveyRows, measureRows, supportRows, reviewRows, transferRows] =
+            await Promise.all([
+              db.trees.toArray(),
+              db.surveys.toArray(),
+              db.measures.toArray(),
+              db.supports.toArray(),
+              db.reviews.toArray(),
+              db.transfers.toArray(),
+            ])
+          return { treeRows, surveyRows, measureRows, supportRows, reviewRows, transferRows }
         }).subscribe({
-          next: ({ treeRows, surveyRows, measureRows, supportRows, reviewRows }) => {
+          next: ({ treeRows, surveyRows, measureRows, supportRows, reviewRows, transferRows }) => {
             const sorted = [...treeRows].sort((a, b) => a.code.localeCompare(b.code, 'zh-Hans-CN'))
             trees.value = sorted
             surveys.value = surveyRows
             measures.value = measureRows
             supports.value = supportRows
             reviews.value = reviewRows
+            transfers.value = transferRows
             loading.value = false
             ready.value = true
             error.value = ''
@@ -277,6 +302,8 @@ export const useTreeStore = defineStore('tree', () => {
   async function updateTree(treeId: string, draft: TreeDraft): Promise<void> {
     const existing = await db.trees.get(treeId)
     if (!existing) return
+    const lockReason = guardTreeWritable(treeId)
+    if (lockReason !== null) throw new Error(lockReason)
     await putTree({
       ...existing,
       code: draft.code.trim() || existing.code,
@@ -289,6 +316,8 @@ export const useTreeStore = defineStore('tree', () => {
   }
 
   async function deleteTree(treeId: string): Promise<void> {
+    const lockReason = guardTreeWritable(treeId)
+    if (lockReason !== null) throw new Error(lockReason)
     await removeTree(treeId)
     if (currentTreeId.value === treeId) selectTree(null)
     await refreshCounts()
@@ -305,6 +334,9 @@ export const useTreeStore = defineStore('tree', () => {
     measures,
     supports,
     reviews,
+    transfers,
+    lockedTreeMap,
+    guardTreeWritable,
     loading,
     ready,
     error,

@@ -29,6 +29,11 @@ export interface Review {
   conclusion: string
   /** 后续措施（长势为衰弱 / 濒危时必填） */
   followUp: string
+  /**
+   * 复评结论的归属单位：出具该结论时的管护单位。
+   * 定案后不随古树管护权划转改写，接手单位只能查看、不能改写这条结论。
+   */
+  ownerUnit: string
   createdAt: string
   updatedAt: string
   revision: number
