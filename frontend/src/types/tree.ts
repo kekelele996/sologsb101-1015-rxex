@@ -25,6 +25,8 @@ export interface Tree {
   location: string
   /** 管护单位 */
   owner: string
+  /** 进行中的划转记录 id（划转期间锁定古树，两边不能同时改同一株树） */
+  activeTransferId: string | null
   /** 最近一次复壮措施完成日期（措施完成时回写） */
   lastMeasureDate: string
   createdAt: string

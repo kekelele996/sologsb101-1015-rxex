@@ -131,7 +131,7 @@ async function handleSubmit(): Promise<void> {
   submitting.value = true
   try {
     if (editingId.value === null) {
-      await create({ ...form }, 'survey')
+      await create({ ...form, owner: tree.value?.owner ?? '' }, 'survey')
       ElMessage.success('树体检查记录已登记')
     } else {
       await update(editingId.value, { ...form })

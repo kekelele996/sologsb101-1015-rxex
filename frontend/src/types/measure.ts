@@ -16,6 +16,8 @@ export interface Measure {
   id: string
   /** 所属古树 */
   treeId: string
+  /** 管护单位归属（随树划转：整棵树交给接手单位时，措施记录一并划转） */
+  owner: string
   /** 措施类型 */
   type: MeasureType
   /** 实施日期 YYYY-MM-DD */

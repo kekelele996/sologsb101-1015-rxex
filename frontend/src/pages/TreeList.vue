@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
  * /trees 古树一树一档
- * 新建档案、按保护级别与树种筛选、回显检查次数与最新长势等级、级联删除。
- * 消费模型：Tree、Review、Survey、Measure、Support；复用组件：<VigorTag>、<FilterBar>、<StatBadge>、<EmptyPanel>
+ * 新建档案、按保护级别与树种筛选、回显检查次数与最新长势等级、级联删除；
+ * 发起管护划转、显示划转锁定状态与待裁定对账争议（对不上的摆到档案页等人裁定）。
+ * 消费模型：Tree、Review、Survey、Measure、Support、TransferRecord；复用组件：<VigorTag>、<FilterBar>、<StatBadge>、<EmptyPanel>
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -12,6 +13,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import VigorTag from '@/components/common/VigorTag.vue'
 import { useTreeStore } from '@/stores/treeStore'
+import { useTransferStore } from '@/stores/transferStore'
 import {
   PROTECT_LEVEL_OPTIONS,
   TREE_SPECIES_CANDIDATES,
@@ -19,9 +21,11 @@ import {
   type Tree,
   type TreeDraft,
 } from '@/types/tree'
+import { TRANSFER_STATUS_LABEL, type TransferRecord } from '@/types/transfer'
 
 const router = useRouter()
 const treeStore = useTreeStore()
+const transferStore = useTransferStore()
 
 const dialogVisible = ref(false)
 const submitting = ref(false)
@@ -67,8 +71,12 @@ const totals = computed(() => {
   return { level1, weak, overdue }
 })
 
+/** 待裁定的划转（两边按编号对账对不上，摆在档案页等人裁定） */
+const adjudicatingTransfers = computed<TransferRecord[]>(() => treeStore.adjudicatingTransfers)
+
 onMounted(() => {
   void treeStore.loadAll()
+  void transferStore.init()
 })
 
 function openCreate(): void {
@@ -132,6 +140,68 @@ async function handleDelete(row: Tree): Promise<void> {
   ElMessage.success('古树档案已删除')
 }
 
+async function handleInitiateTransfer(row: Tree): Promise<void> {
+  if (treeStore.isTreeLocked(row.id)) {
+    const active = treeStore.transferOfTree(row.id)
+    ElMessage.warning(`该古树有进行中的划转（${active ? TRANSFER_STATUS_LABEL[active.status] : ''}），划转期间锁定，不能重复划转`)
+    return
+  }
+  let toOwner = ''
+  try {
+    const result = await ElMessageBox.prompt(
+      `将「${row.code} ${row.species}」整棵连同树体检查、复壮措施、加固件一起划转给接手单位；原单位的长势复评结论留在原单位名下。`,
+      '发起管护划转',
+      {
+        confirmButtonText: '发起划转',
+        cancelButtonText: '取消',
+        inputPlaceholder: '接手单位名称，如：朝阳区公园管理中心',
+        inputValidator: (value: string) => (value.trim() === '' ? '请填写接手单位' : true),
+      }
+    )
+    toOwner = result.value.trim()
+  } catch {
+    return
+  }
+  const record = await transferStore.initiate(row.id, toOwner, '')
+  if (record === null) {
+    ElMessage.error(transferStore.lastMessage || '发起划转失败')
+    return
+  }
+  ElMessage.success(`已发起「${record.treeCode}」的管护划转，等待接手单位确认`)
+}
+
+async function handleAdjudicateAccept(row: TransferRecord): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `裁定「${row.treeCode} ${row.treeSpecies}」的对账争议：确认接手？`,
+      '裁定：确认接手？',
+      { type: 'warning', confirmButtonText: '裁定接手', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  const ok = await transferStore.adjudicateAccept(row.id)
+  if (ok) ElMessage.success('裁定：确认接手')
+  else ElMessage.error(transferStore.lastMessage || '裁定失败')
+}
+
+async function handleAdjudicateReject(row: TransferRecord): Promise<void> {
+  let reason = ''
+  try {
+    const result = await ElMessageBox.prompt('裁定退回，请填写退回原因', '裁定：退回原单位', {
+      confirmButtonText: '裁定退回',
+      cancelButtonText: '取消',
+      inputType: 'textarea',
+    })
+    reason = result.value
+  } catch {
+    return
+  }
+  const ok = await transferStore.adjudicateReject(row.id, reason)
+  if (ok) ElMessage.success('裁定：退回原单位继续办')
+  else ElMessage.error(transferStore.lastMessage || '裁定失败')
+}
+
 function goSurveys(row: Tree): void {
   treeStore.selectTree(row.id)
   void router.push(`/trees/${row.id}/surveys`)
@@ -152,6 +222,30 @@ function handleFilterChange(key: string, value: string): void {
       <StatBadge label="加固件超期" :value="totals.overdue" suffix="件" tone="warning" icon="Warning" hint="超过检查周期未检查的加固件" />
       <StatBadge label="筛选结果" :value="rows.length" suffix="株" tone="info" icon="PieChart" size="small" />
     </div>
+
+    <el-alert
+      v-if="adjudicatingTransfers.length > 0"
+      type="error"
+      show-icon
+      :closable="false"
+      class="mb-14"
+      :title="`有 ${adjudicatingTransfers.length} 项划转两边按编号对账对不上，已摆在档案页等人裁定`"
+      description="对账争议期间古树保持锁定，两边不能同时改同一株树。裁定后按结果接手或退回。"
+    >
+      <template #default>
+        <div class="adjudicate-list">
+          <div v-for="row in adjudicatingTransfers" :key="row.id" class="adjudicate-item">
+            <span class="adjudicate-code">{{ row.treeCode }} {{ row.treeSpecies }}</span>
+            <span class="cell-sub">{{ row.fromOwner }} → {{ row.toOwner }}</span>
+            <span class="cell-warn">{{ row.mismatchNote }}</span>
+            <span class="adjudicate-actions">
+              <el-button link type="success" size="small" @click="handleAdjudicateAccept(row)">裁定接手</el-button>
+              <el-button link type="danger" size="small" @click="handleAdjudicateReject(row)">裁定退回</el-button>
+            </span>
+          </div>
+        </div>
+      </template>
+    </el-alert>
 
     <el-card shadow="never">
       <template #header>
@@ -212,7 +306,18 @@ function handleFilterChange(key: string, value: string): void {
           <template #default="{ row }">
             <div class="cell-stack">
               <span>{{ row.location }}</span>
-              <span class="cell-sub">{{ row.owner }}</span>
+              <span class="cell-sub">
+                {{ row.owner }}
+                <el-tag
+                  v-if="treeStore.isTreeLocked(row.id)"
+                  type="warning"
+                  size="small"
+                  effect="dark"
+                  class="lock-tag"
+                >
+                  划转锁定
+                </el-tag>
+              </span>
             </div>
           </template>
         </el-table-column>
@@ -255,10 +360,19 @@ function handleFilterChange(key: string, value: string): void {
             <span v-else>{{ row.lastMeasureDate }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="310" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click.stop="goSurveys(row)">树体检查</el-button>
             <el-button link type="primary" size="small" @click.stop="openEdit(row)">编辑</el-button>
+            <el-button
+              link
+              type="warning"
+              size="small"
+              :disabled="treeStore.isTreeLocked(row.id)"
+              @click.stop="handleInitiateTransfer(row)"
+            >
+              {{ treeStore.isTreeLocked(row.id) ? '划转中' : '划转' }}
+            </el-button>
             <el-button link type="danger" size="small" @click.stop="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -356,5 +470,41 @@ function handleFilterChange(key: string, value: string): void {
 .cell-warn {
   color: #c0392b;
   font-weight: 600;
+}
+
+.mb-14 {
+  margin-bottom: 14px;
+}
+
+.lock-tag {
+  margin-left: 6px;
+}
+
+.adjudicate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.adjudicate-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
+}
+
+.adjudicate-code {
+  font-weight: 600;
+  color: #2f2a24;
+}
+
+.adjudicate-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
 }
 </style>

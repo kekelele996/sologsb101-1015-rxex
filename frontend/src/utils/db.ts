@@ -11,6 +11,7 @@ import type { Survey } from '../types/survey'
 import type { Measure, MeasureState } from '../types/measure'
 import type { Support } from '../types/support'
 import type { Review } from '../types/review'
+import type { TransferRecord } from '../types/transfer'
 import { nowIso, today } from './id'
 import { seedDatabase } from './seed'
 
@@ -18,10 +19,10 @@ import { seedDatabase } from './seed'
 export const DB_NAME = 'gbheritagetree'
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_SCHEMA_VERSION = 2
+export const DB_SCHEMA_VERSION = 3
 
 /** 数据行结构修订号 */
-export const ROW_REVISION = 2
+export const ROW_REVISION = 3
 
 class HeritageTreeDatabase extends Dexie {
   trees!: Table<Tree, string>
@@ -29,6 +30,7 @@ class HeritageTreeDatabase extends Dexie {
   measures!: Table<Measure, string>
   supports!: Table<Support, string>
   reviews!: Table<Review, string>
+  transfers!: Table<TransferRecord, string>
 
   constructor() {
     super(DB_NAME)
@@ -43,7 +45,7 @@ class HeritageTreeDatabase extends Dexie {
     })
 
     // ---------- v2：补齐索引与回写字段，并迁移历史数据 ----------
-    this.version(DB_SCHEMA_VERSION)
+    this.version(2)
       .stores({
         trees: 'id, code, species, protectLevel, ageYears, createdAt, updatedAt, owner',
         // 复合索引 [treeId+date]：按古树 + 日期快速取检查记录
@@ -81,6 +83,45 @@ class HeritageTreeDatabase extends Dexie {
           if (typeof row.lastCheckDate !== 'string') row.lastCheckDate = ''
           if (typeof row.checkCycleMon !== 'number') row.checkCycleMon = 12
         })
+      })
+
+    // ---------- v3：管护划转 ----------
+    // 新增 transfers 表；为 surveys / measures / supports / reviews 补齐 owner（管护单位归属），
+    // 为 trees 补齐 activeTransferId。打开时先按古树现状回填管护单位，之后才启用移交。
+    this.version(3)
+      .stores({
+        trees: 'id, code, species, protectLevel, ageYears, createdAt, updatedAt, owner, activeTransferId',
+        surveys: 'id, treeId, [treeId+date], date, siteNote, owner',
+        measures: 'id, treeId, type, state, date, operator, owner',
+        supports: 'id, treeId, type, installDate, lastCheckDate, owner',
+        reviews: 'id, treeId, date, vigor, trend, owner',
+        transfers: 'id, treeId, treeCode, fromOwner, toOwner, status, createdAt',
+      })
+      .upgrade(async (tx) => {
+        // 迁移 5：为古树补齐 activeTransferId
+        await tx.table('trees').toCollection().modify((row: Record<string, unknown>) => {
+          if (row.activeTransferId === undefined) row.activeTransferId = null
+        })
+        // 迁移 6：按古树现状回填管护单位（owner）。
+        // 库里已有数据缺归属，打开时先按现状回填管护单位，之后才启用移交。
+        const trees = await tx.table('trees').toArray()
+        const ownerByTree = new Map<string, string>()
+        for (const tree of trees) {
+          ownerByTree.set(String(tree.id), typeof tree.owner === 'string' ? tree.owner : '')
+        }
+        const childTables = [
+          tx.table('surveys'),
+          tx.table('measures'),
+          tx.table('supports'),
+          tx.table('reviews'),
+        ]
+        for (const table of childTables) {
+          await table.toCollection().modify((row: Record<string, unknown>) => {
+            if (typeof row.owner === 'string' && row.owner !== '') return
+            const treeId = String(row.treeId ?? '')
+            row.owner = ownerByTree.get(treeId) ?? ''
+          })
+        }
       })
   }
 }
@@ -251,47 +292,62 @@ export interface DatabaseSnapshot {
   measures: Measure[]
   supports: Support[]
   reviews: Review[]
+  transfers: TransferRecord[]
 }
 
 /** 导出整库快照 */
 export async function exportSnapshot(): Promise<DatabaseSnapshot> {
-  const [trees, surveys, measures, supports, reviews] = await Promise.all([
+  const [trees, surveys, measures, supports, reviews, transfers] = await Promise.all([
     db.trees.toArray(),
     db.surveys.toArray(),
     db.measures.toArray(),
     db.supports.toArray(),
     db.reviews.toArray(),
+    db.transfers.toArray(),
   ])
-  return { name: DB_NAME, schemaVersion: DB_SCHEMA_VERSION, exportedAt: nowIso(), trees, surveys, measures, supports, reviews }
+  return {
+    name: DB_NAME,
+    schemaVersion: DB_SCHEMA_VERSION,
+    exportedAt: nowIso(),
+    trees,
+    surveys,
+    measures,
+    supports,
+    reviews,
+    transfers,
+  }
 }
 
 /** 用快照覆盖整库（导入存档） */
 export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> {
-  await db.transaction('rw', db.trees, db.surveys, db.measures, db.supports, db.reviews, async () => {
+  await db.transaction('rw', [db.trees, db.surveys, db.measures, db.supports, db.reviews, db.transfers], async () => {
     await Promise.all([
       db.trees.clear(),
       db.surveys.clear(),
       db.measures.clear(),
       db.supports.clear(),
       db.reviews.clear(),
+      db.transfers.clear(),
     ])
     await db.trees.bulkPut(snapshot.trees.map((row) => ({ ...row, revision: ROW_REVISION })))
     await db.surveys.bulkPut(snapshot.surveys.map((row) => ({ ...row, revision: ROW_REVISION })))
     await db.measures.bulkPut(snapshot.measures.map((row) => ({ ...row, revision: ROW_REVISION })))
     await db.supports.bulkPut(snapshot.supports.map((row) => ({ ...row, revision: ROW_REVISION })))
     await db.reviews.bulkPut(snapshot.reviews.map((row) => ({ ...row, revision: ROW_REVISION })))
+    await db.transfers.bulkPut(snapshot.transfers.map((row) => ({ ...row, revision: ROW_REVISION })))
   })
 }
 
 /** 清空全部数据并重新灌入演示数据 */
 export async function resetDatabase(): Promise<void> {
-  await db.transaction('rw', db.trees, db.surveys, db.measures, db.supports, db.reviews, async () => {
+  await db.transaction('rw', [db.trees, db.surveys, db.measures, db.supports, db.reviews, db.transfers], async () => {
     await Promise.all([
       db.trees.clear(),
       db.surveys.clear(),
       db.measures.clear(),
       db.supports.clear(),
       db.reviews.clear(),
+      db.transfers.clear(),
     ])
   })
   await seedDatabase()
@@ -299,12 +355,171 @@ export async function resetDatabase(): Promise<void> {
 
 /** 各表行数统计 */
 export async function countAll(): Promise<Record<string, number>> {
-  const [trees, surveys, measures, supports, reviews] = await Promise.all([
+  const [trees, surveys, measures, supports, reviews, transfers] = await Promise.all([
     db.trees.count(),
     db.surveys.count(),
     db.measures.count(),
     db.supports.count(),
     db.reviews.count(),
+    db.transfers.count(),
   ])
-  return { trees, surveys, measures, supports, reviews }
+  return { trees, surveys, measures, supports, reviews, transfers }
+}
+
+/* ------------------------------ 管护划转 ------------------------------ */
+
+export async function listTransfers(): Promise<TransferRecord[]> {
+  const rows = await db.transfers.toArray()
+  return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+export async function getTransfer(id: string): Promise<TransferRecord | undefined> {
+  return db.transfers.get(id)
+}
+
+/**
+ * 发起管护划转。
+ * 整棵树连同树体检查、复壮措施、加固件一起交给接手单位；
+ * 长势复评结论留在原单位名下（不随树划转）。
+ * 划转期间锁定古树，两边不能同时改同一株树。
+ */
+export async function initiateTransfer(treeId: string, toOwner: string, note: string): Promise<TransferRecord> {
+  const tree = await db.trees.get(treeId)
+  if (!tree) throw new Error('古树不存在')
+  if (tree.activeTransferId) throw new Error('该古树已有进行中的划转，不能重复划转')
+  const target = toOwner.trim()
+  if (target === '') throw new Error('请填写接手单位')
+  if (target === tree.owner) throw new Error('接手单位与当前管护单位相同，无需划转')
+
+  const [surveyCount, measureCount, supportCount] = await Promise.all([
+    db.surveys.where('treeId').equals(treeId).count(),
+    db.measures.where('treeId').equals(treeId).count(),
+    db.supports.where('treeId').equals(treeId).count(),
+  ])
+
+  const record: TransferRecord = {
+    id: `transfer-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+    treeId,
+    treeCode: tree.code,
+    treeSpecies: tree.species,
+    fromOwner: tree.owner,
+    toOwner: target,
+    status: 'pending',
+    surveyCount,
+    measureCount,
+    supportCount,
+    reconciled: false,
+    mismatchNote: '',
+    note: note.trim(),
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    resolvedAt: null,
+    revision: ROW_REVISION,
+  }
+
+  await db.transaction('rw', db.trees, db.transfers, async () => {
+    await db.transfers.put(record)
+    await db.trees.update(treeId, { activeTransferId: record.id, updatedAt: nowIso() })
+  })
+
+  return record
+}
+
+/**
+ * 接手单位确认接手。
+ * 古树管护单位改为接手单位；树体检查、复壮措施、加固件随树划转（owner 改为接手单位）；
+ * 长势复评结论留在原单位名下（owner 不变）。划转结束，解除锁定。
+ */
+export async function acceptTransfer(transferId: string): Promise<void> {
+  const record = await db.transfers.get(transferId)
+  if (!record) throw new Error('划转记录不存在')
+  if (record.status !== 'pending' && record.status !== 'adjudicating') {
+    throw new Error('该划转已处理，不能重复接手')
+  }
+  const tree = await db.trees.get(record.treeId)
+  if (!tree) throw new Error('古树不存在')
+
+  await db.transaction(
+    'rw',
+    [db.trees, db.surveys, db.measures, db.supports, db.reviews, db.transfers],
+    async () => {
+      // 整棵树跟着走：管护单位改为接手单位，解除锁定
+      await db.trees.update(record.treeId, {
+        owner: record.toOwner,
+        activeTransferId: null,
+        updatedAt: nowIso(),
+      })
+      // 树体检查、复壮措施、加固件随树划转
+      await db.surveys
+        .where('treeId')
+        .equals(record.treeId)
+        .modify({ owner: record.toOwner, updatedAt: nowIso() })
+      await db.measures
+        .where('treeId')
+        .equals(record.treeId)
+        .modify({ owner: record.toOwner, updatedAt: nowIso() })
+      await db.supports
+        .where('treeId')
+        .equals(record.treeId)
+        .modify({ owner: record.toOwner, updatedAt: nowIso() })
+      // 长势复评结论留在原单位名下：owner 不改写
+      await db.transfers.update(transferId, {
+        status: 'accepted',
+        reconciled: true,
+        mismatchNote: '',
+        updatedAt: nowIso(),
+        resolvedAt: nowIso(),
+      })
+    },
+  )
+}
+
+/**
+ * 接手单位退回（没接稳的部分退还原单位继续办）。
+ * 古树仍归原单位管护，解除锁定。
+ */
+export async function rejectTransfer(transferId: string, reason: string): Promise<void> {
+  const record = await db.transfers.get(transferId)
+  if (!record) throw new Error('划转记录不存在')
+  if (record.status !== 'pending' && record.status !== 'adjudicating') {
+    throw new Error('该划转已处理，不能退回')
+  }
+
+  await db.transaction('rw', db.trees, db.transfers, async () => {
+    await db.trees.update(record.treeId, { activeTransferId: null, updatedAt: nowIso() })
+    await db.transfers.update(transferId, {
+      status: 'rejected',
+      reconciled: false,
+      mismatchNote: reason.trim() || '接手单位退回',
+      updatedAt: nowIso(),
+      resolvedAt: nowIso(),
+    })
+  })
+}
+
+/**
+ * 两边按树的编号对账，对不上的先摆到档案页等人裁定。
+ * 接手单位发现编号 / 数量对不上时，标记为待裁定。
+ */
+export async function reportMismatch(transferId: string, note: string): Promise<void> {
+  const record = await db.transfers.get(transferId)
+  if (!record) throw new Error('划转记录不存在')
+  if (record.status !== 'pending') throw new Error('该划转已处理，不能标记对不上')
+
+  await db.transfers.update(transferId, {
+    status: 'adjudicating',
+    reconciled: false,
+    mismatchNote: note.trim() || '两边按编号对账对不上，待裁定',
+    updatedAt: nowIso(),
+  })
+}
+
+/** 裁定后接手：待裁定的划转经裁定后确认接手 */
+export async function adjudicateAccept(transferId: string): Promise<void> {
+  await acceptTransfer(transferId)
+}
+
+/** 裁定后退回：待裁定的划转经裁定后退回原单位 */
+export async function adjudicateReject(transferId: string, reason: string): Promise<void> {
+  await rejectTransfer(transferId, reason)
 }

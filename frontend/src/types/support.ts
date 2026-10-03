@@ -12,6 +12,8 @@ export interface Support {
   id: string
   /** 所属古树 */
   treeId: string
+  /** 管护单位归属（随树划转：整棵树交给接手单位时，加固件一并划转） */
+  owner: string
   /** 类型 */
   type: SupportType
   /** 安装日期 YYYY-MM-DD */

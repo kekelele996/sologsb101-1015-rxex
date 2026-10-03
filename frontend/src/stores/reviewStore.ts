@@ -6,7 +6,7 @@ import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Review, ReviewDraft, Trend, Vigor } from '../types/review'
 import { VIGOR_NEED_FOLLOW_UP, VIGOR_OPTIONS } from '../types/review'
-import { db, initDatabase, putReview, removeReview } from '../utils/db'
+import { db, initDatabase, putReview, removeReview, ROW_REVISION } from '../utils/db'
 import { nowIso, uuid } from '../utils/id'
 import { useTreeStore } from './treeStore'
 
@@ -95,9 +95,11 @@ export const useReviewStore = defineStore('review', () => {
       return null
     }
     const stamp = nowIso()
+    const tree = await db.trees.get(draft.treeId)
     const row: Review = {
       id: uuid('review'),
       treeId: draft.treeId,
+      owner: tree?.owner ?? '',
       date: draft.date,
       vigor: draft.vigor,
       trend: draft.trend,
@@ -105,7 +107,7 @@ export const useReviewStore = defineStore('review', () => {
       followUp: draft.followUp.trim(),
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: ROW_REVISION,
     }
     await putReview(row)
     revision.value += 1

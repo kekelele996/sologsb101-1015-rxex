@@ -84,11 +84,12 @@ sologsb101-1015/
 
 | 路由 | 页面文件 | 功能 |
 | --- | --- | --- |
-| `/trees` | `pages/TreeList.vue` | 古树一树一档：新建/编辑/级联删除、按保护级别与树种筛选、回显检查次数与最新长势等级 |
+| `/trees` | `pages/TreeList.vue` | 古树一树一档：新建/编辑/级联删除、按保护级别与树种筛选、回显检查次数与最新长势等级、**发起管护划转、显示划转锁定状态与待裁定对账争议** |
 | `/trees/:id/surveys` | `pages/TreeSurvey.vue` | 树体与立地检查：录树高/胸径/冠幅/倾斜/空洞并对比上次、年化生长量、古树历史时间线 |
 | `/measures` | `pages/MeasureBoard.vue` | 复壮措施台账：按类型与实施状态筛选、行内草稿、批量改状态，完成即回写最近复壮日期 |
 | `/supports` | `pages/SupportBoard.vue` | 支撑加固与避雷件登记：超周期未检查自动高亮 + 顶部提醒 + 一键登记本次检查 |
-| `/reviews` | `pages/ReviewView.vue` | 长势复评与结构版本：衰弱/濒危强制填写后续措施、历史时间线、JSON 导入导出 |
+| `/reviews` | `pages/ReviewView.vue` | 长势复评与结构版本：衰弱/濒危强制填写后续措施、历史时间线、JSON 导入导出、**显示复评结论归属单位** |
+| `/transfers` | `pages/TransferBoard.vue` | **管护划转台账**：发起划转、接手/退回/对账/裁定，整棵树连同检查/措施/加固件交给接手单位，长势复评结论留在原单位名下 |
 
 `/` 重定向到 `/trees`，未匹配路径统一回落到 `/trees`。
 **层级路由支持直接深链**：把 `http://localhost:22815/trees/tree-guozijian-0007/surveys` 直接粘贴到地址栏即可打开；
@@ -100,21 +101,23 @@ sologsb101-1015/
 
 * **持久化方案**：IndexedDB，通过 Dexie 封装（`src/utils/db.ts`）。
 * **数据库名**：`gbheritagetree`。
-* **数据结构版本**：`DB_SCHEMA_VERSION = 2`，`version(1)` 建立全部表，`version(2)` 补齐索引并执行 `.upgrade()` 迁移：
+* **数据结构版本**：`DB_SCHEMA_VERSION = 3`，`version(1)` 建立全部表，`version(2)` 补齐索引并执行 `.upgrade()` 迁移，`version(3)` 新增 `transfers` 表并为各表补齐 `owner`（管护单位归属）：
   * `surveys` 增加 `[treeId+date]` 复合索引、`measures` 增加 `operator` 索引、`supports` 增加 `lastCheckDate` 索引、`reviews` 增加 `trend` 索引；
   * 回填 `revision` / `createdAt` / `updatedAt`；
   * 为 `trees` 补齐 `lastMeasureDate`（最近复壮日期）回写字段；
   * 为 `reviews` 补齐 `followUp`（后续措施）字段；
-  * 为 `supports` 补齐 `lastCheckDate` 与 `checkCycleMon` 缺省值。
+  * 为 `supports` 补齐 `lastCheckDate` 与 `checkCycleMon` 缺省值；
+  * **v3**：新增 `transfers` 表（管护划转记录）；为 `trees` 补齐 `activeTransferId`（划转锁定）；为 `surveys` / `measures` / `supports` / `reviews` 补齐 `owner`（管护单位归属），打开时先按古树现状回填管护单位，之后才启用移交。
 * **表结构**：
 
   | 表 | 主键 | 主要索引 |
   | --- | --- | --- |
-  | `trees` | id | code, species, protectLevel, ageYears, createdAt, updatedAt, owner |
-  | `surveys` | id | treeId, [treeId+date], date, siteNote |
-  | `measures` | id | treeId, type, state, date, operator |
-  | `supports` | id | treeId, type, installDate, lastCheckDate |
-  | `reviews` | id | treeId, date, vigor, trend |
+  | `trees` | id | code, species, protectLevel, ageYears, createdAt, updatedAt, owner, activeTransferId |
+  | `surveys` | id | treeId, [treeId+date], date, siteNote, owner |
+  | `measures` | id | treeId, type, state, date, operator, owner |
+  | `supports` | id | treeId, type, installDate, lastCheckDate, owner |
+  | `reviews` | id | treeId, date, vigor, trend, owner |
+  | `transfers` | id | treeId, treeCode, fromOwner, toOwner, status, createdAt |
 
 * **首屏演示数据**：`initDatabase()` 在打开数据库后检测 `trees` 表是否为空，为空则调用 `utils/seed.ts` 播种，
   幂等且只执行一次。播种链路为 **古树 → 树体检查 / 复壮措施 / 加固件 / 长势复评** 三层互相引用：
@@ -155,3 +158,7 @@ npm run preview      # 预览 dist 产物
   「登记本次检查」会把最近检查日期置为今天并解除高亮。
 * **复评强制校验**：长势为「衰弱」或「濒危」时，后续措施为必填项，未填写无法保存。
 * **措施回写**：复壮措施状态改为「已完成」时，若实施日期晚于古树现有最近复壮日期，则自动回写该日期。
+* **管护划转**：整棵古树连同树体检查、复壮措施、加固件一起交给接手单位（`owner` 改为接手单位）；原单位已经定过的长势复评结论留在原单位名下（`owner` 不改写），不被接手单位改写。
+* **划转锁定**：划转期间（待接手 / 待裁定）古树保持锁定（`activeTransferId`），两边不能同时改同一株树。
+* **对账裁定**：两边按树的编号对账，对不上的标记为「待裁定」并摆在档案页（`/trees`）等人裁定；裁定后按结果接手或退回，没接稳的部分退还原单位继续办。
+* **归属回填**：打开数据库时先按古树现状回填各记录的管护单位（`owner`），之后才启用移交。

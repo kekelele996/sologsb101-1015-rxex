@@ -19,6 +19,11 @@ export interface Review {
   id: string
   /** 所属古树 */
   treeId: string
+  /**
+   * 管护单位归属（长势复评结论留在原单位名下，不随树划转）。
+   * 即使古树整棵交给接手单位，原单位已经定过的复评结论仍归原单位所有。
+   */
+  owner: string
   /** 复评日期 YYYY-MM-DD */
   date: string
   /** 长势 */

@@ -76,7 +76,7 @@ export function buildHistory(
       date: row.date,
       title: `长势复评 · ${row.vigor}`,
       detail: row.conclusion + (row.followUp === '' ? '' : `（后续措施：${row.followUp}）`),
-      badge: row.trend,
+      badge: row.owner ? `归属：${row.owner}` : row.trend,
     })
   })
   return items.sort((a, b) => b.date.localeCompare(a.date))

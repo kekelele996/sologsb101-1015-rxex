@@ -11,6 +11,7 @@ import type { Survey } from '../types/survey'
 import type { Measure } from '../types/measure'
 import type { Support } from '../types/support'
 import type { Review, Trend, Vigor } from '../types/review'
+import type { TransferRecord } from '../types/transfer'
 import { VIGOR_NEED_FOLLOW_UP } from '../types/review'
 import {
   DB_SCHEMA_VERSION,
@@ -110,6 +111,7 @@ export const useTreeStore = defineStore('tree', () => {
   const measures = ref<Measure[]>([])
   const supports = ref<Support[]>([])
   const reviews = ref<Review[]>([])
+  const transfers = ref<TransferRecord[]>([])
   const loading = ref(true)
   const ready = ref(false)
   const error = ref('')
@@ -189,6 +191,31 @@ export const useTreeStore = defineStore('tree', () => {
     supports.value.filter((row) => isSupportOverdue(row.lastCheckDate, row.checkCycleMon))
   )
 
+  /** 待接手的划转（接手单位尚未确认） */
+  const pendingTransfers = computed<TransferRecord[]>(() =>
+    transfers.value.filter((row) => row.status === 'pending')
+  )
+
+  /** 待裁定的划转（两边按编号对账对不上，摆在档案页等人裁定） */
+  const adjudicatingTransfers = computed<TransferRecord[]>(() =>
+    transfers.value.filter((row) => row.status === 'adjudicating')
+  )
+
+  /** 进行中的划转（待接手 + 待裁定） */
+  const activeTransfers = computed<TransferRecord[]>(() =>
+    transfers.value.filter((row) => row.status === 'pending' || row.status === 'adjudicating')
+  )
+
+  /** 古树是否被划转锁定（两边不能同时改同一株树） */
+  function isTreeLocked(treeId: string): boolean {
+    return activeTransfers.value.some((row) => row.treeId === treeId)
+  }
+
+  /** 取某株古树进行中的划转记录 */
+  function transferOfTree(treeId: string): TransferRecord | null {
+    return activeTransfers.value.find((row) => row.treeId === treeId) ?? null
+  }
+
   function statOf(treeId: string): TreeStat {
     return stats.value[treeId] ?? { treeId, ...EMPTY_STAT }
   }
@@ -201,22 +228,24 @@ export const useTreeStore = defineStore('tree', () => {
       if (!subscribed) {
         subscribed = true
         liveQuery(async () => {
-          const [treeRows, surveyRows, measureRows, supportRows, reviewRows] = await Promise.all([
+          const [treeRows, surveyRows, measureRows, supportRows, reviewRows, transferRows] = await Promise.all([
             db.trees.toArray(),
             db.surveys.toArray(),
             db.measures.toArray(),
             db.supports.toArray(),
             db.reviews.toArray(),
+            db.transfers.toArray(),
           ])
-          return { treeRows, surveyRows, measureRows, supportRows, reviewRows }
+          return { treeRows, surveyRows, measureRows, supportRows, reviewRows, transferRows }
         }).subscribe({
-          next: ({ treeRows, surveyRows, measureRows, supportRows, reviewRows }) => {
+          next: ({ treeRows, surveyRows, measureRows, supportRows, reviewRows, transferRows }) => {
             const sorted = [...treeRows].sort((a, b) => a.code.localeCompare(b.code, 'zh-Hans-CN'))
             trees.value = sorted
             surveys.value = surveyRows
             measures.value = measureRows
             supports.value = supportRows
             reviews.value = reviewRows
+            transfers.value = transferRows
             loading.value = false
             ready.value = true
             error.value = ''
@@ -264,6 +293,7 @@ export const useTreeStore = defineStore('tree', () => {
       ageYears: draft.ageYears,
       location: draft.location.trim(),
       owner: draft.owner.trim(),
+      activeTransferId: null,
       lastMeasureDate: '',
       createdAt: stamp,
       updatedAt: stamp,
@@ -305,6 +335,7 @@ export const useTreeStore = defineStore('tree', () => {
     measures,
     supports,
     reviews,
+    transfers,
     loading,
     ready,
     error,
@@ -316,6 +347,11 @@ export const useTreeStore = defineStore('tree', () => {
     stats,
     visibleTrees,
     overdueSupports,
+    pendingTransfers,
+    adjudicatingTransfers,
+    activeTransfers,
+    isTreeLocked,
+    transferOfTree,
     statOf,
     loadAll,
     selectTree,

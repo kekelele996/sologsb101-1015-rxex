@@ -358,6 +358,11 @@ function handleFilterChange(key: string, value: string): void {
                 <span>{{ row.conclusion }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="归属单位" width="180">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain" type="info">{{ row.owner || '未回填' }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="后续措施" min-width="240">
               <template #default="{ row }">
                 <el-tag v-if="row.followUp === ''" type="info" size="small" effect="plain">无需填写</el-tag>

@@ -5,10 +5,11 @@
  */
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Coin, Files, FirstAidKit, Histogram, OfficeBuilding } from '@element-plus/icons-vue'
+import { Coin, Files, FirstAidKit, Histogram, OfficeBuilding, Promotion } from '@element-plus/icons-vue'
 import { useTreeStore } from '@/stores/treeStore'
 import { useMeasureStore } from '@/stores/measureStore'
 import { useReviewStore } from '@/stores/reviewStore'
+import { useTransferStore } from '@/stores/transferStore'
 import { ROUTES } from '@/router'
 
 const route = useRoute()
@@ -16,6 +17,7 @@ const router = useRouter()
 const treeStore = useTreeStore()
 const measureStore = useMeasureStore()
 const reviewStore = useReviewStore()
+const transferStore = useTransferStore()
 
 const navItems = computed(() => {
   const currentTreeId = treeStore.currentTreeId
@@ -31,6 +33,13 @@ const navItems = computed(() => {
     { path: ROUTES.measures, label: '复壮措施', icon: FirstAidKit, badge: String(treeStore.measures.length) },
     { path: ROUTES.supports, label: '加固件', icon: Coin, badge: String(treeStore.supports.length) },
     { path: ROUTES.reviews, label: '长势复评', icon: Histogram, badge: String(treeStore.reviews.length) },
+    {
+      path: ROUTES.transfers,
+      label: '管护划转',
+      icon: Promotion,
+      badge: String(treeStore.activeTransfers.length),
+      badgeDanger: treeStore.adjudicatingTransfers.length > 0,
+    },
   ]
 })
 
@@ -43,11 +52,13 @@ const activePath = computed<string>(() => {
 })
 
 const overdueCount = computed<number>(() => treeStore.overdueSupports.length)
+const adjudicatingCount = computed<number>(() => treeStore.adjudicatingTransfers.length)
 
 onMounted(() => {
   void treeStore.loadAll()
   void measureStore.init()
   void reviewStore.init()
+  void transferStore.init()
 })
 
 function go(path: string): void {
@@ -77,7 +88,7 @@ function go(path: string): void {
         >
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
-          <em v-if="item.badge !== '0'" class="app-nav__badge">{{ item.badge }}</em>
+          <em v-if="item.badge !== '0'" class="app-nav__badge" :class="{ 'is-danger': item.badgeDanger }">{{ item.badge }}</em>
         </button>
       </nav>
       <div class="app-header__meta">
@@ -86,6 +97,7 @@ function go(path: string): void {
         </el-tag>
         <el-tag v-else type="info">未选择古树</el-tag>
         <el-tag v-if="overdueCount > 0" type="danger" effect="dark">加固件超期 {{ overdueCount }} 件</el-tag>
+        <el-tag v-if="adjudicatingCount > 0" type="warning" effect="dark">划转待裁定 {{ adjudicatingCount }} 项</el-tag>
       </div>
     </header>
 
@@ -192,6 +204,11 @@ function go(path: string): void {
   padding: 0 6px;
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.18);
+}
+
+.app-nav__badge.is-danger {
+  background: #c0392b;
+  color: #fff;
 }
 
 .app-header__meta {

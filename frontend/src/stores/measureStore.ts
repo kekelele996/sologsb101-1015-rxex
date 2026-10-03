@@ -11,6 +11,7 @@ import {
   initDatabase,
   putMeasure,
   removeMeasure,
+  ROW_REVISION,
 } from '../utils/db'
 import { nowIso, uuid } from '../utils/id'
 import { useTreeStore } from './treeStore'
@@ -85,9 +86,11 @@ export const useMeasureStore = defineStore('measure', () => {
 
   async function createMeasure(draft: MeasureDraft): Promise<Measure> {
     const stamp = nowIso()
+    const tree = await db.trees.get(draft.treeId)
     const row: Measure = {
       id: uuid('measure'),
       treeId: draft.treeId,
+      owner: tree?.owner ?? '',
       type: draft.type,
       date: draft.date,
       material: draft.material.trim(),
@@ -95,7 +98,7 @@ export const useMeasureStore = defineStore('measure', () => {
       state: draft.state,
       createdAt: stamp,
       updatedAt: stamp,
-      revision: 2,
+      revision: ROW_REVISION,
     }
     await putMeasure(row)
     revision.value += 1

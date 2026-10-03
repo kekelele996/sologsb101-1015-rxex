@@ -114,7 +114,8 @@ async function handleSubmit(): Promise<void> {
   submitting.value = true
   try {
     if (editingId.value === null) {
-      await create({ ...form }, 'support')
+      const owner = treeStore.trees.find((t) => t.id === form.treeId)?.owner ?? ''
+      await create({ ...form, owner }, 'support')
       ElMessage.success('加固件已登记')
     } else {
       await update(editingId.value, { ...form })

@@ -12,6 +12,8 @@ export interface Survey {
   id: string
   /** 所属古树 */
   treeId: string
+  /** 管护单位归属（随树划转：整棵树交给接手单位时，检查记录一并划转） */
+  owner: string
   /** 检查日期 YYYY-MM-DD */
   date: string
   /** 树高（米） */
